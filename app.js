@@ -5,11 +5,9 @@ const cors = require('cors');
 const scheduleCalls = require('./twilio/callScheduler');
 
 const app = express();
-app.use(express.static('frontend'));
-
 app.use(cors());
 app.use(express.json());
-
+app.use(express.static('frontend'));
 app.use('/api/customers', require('./routes/customers'));
 
 mongoose.connect(process.env.MONGO_URI, {
