@@ -5,6 +5,8 @@ const cors = require('cors');
 const scheduleCalls = require('./twilio/callScheduler');
 
 const app = express();
+app.use(express.static('frontend'));
+
 app.use(cors());
 app.use(express.json());
 
