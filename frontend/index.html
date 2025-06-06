@@ -32,6 +32,33 @@
       </div>
     </div>
 
+    <!-- Bulk Upload Customers Section -->
+    <div class="glass-panel">
+      <div class="bulk-upload-section">
+        <h3 class="bulk-upload-title">📁 Bulk Upload Customers</h3>
+        <div class="bulk-upload-content">
+          <div class="file-upload-area">
+            <input type="file" id="csv-file-input" accept=".csv" class="file-input">
+            <label for="csv-file-input" class="file-upload-label">
+              📄 Choose CSV File
+            </label>
+            <button onclick="downloadTemplate()" class="btn btn-template">
+              📥 DOWNLOAD TEMPLATE
+            </button>
+          </div>
+          <div class="upload-status">
+            <div id="upload-progress" class="upload-progress">0%</div>
+            <div class="upload-info">
+              📋 CSV format: name,phone (one customer per line). Name can be text or number (ID). Phone numbers should start with +91.
+            </div>
+          </div>
+          <button onclick="uploadCSV()" id="upload-btn" class="btn btn-success upload-btn" disabled>
+            📤 UPLOAD CUSTOMERS
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- Add Customer Form -->
     <div class="glass-panel">
       <form id="add-customer-form">
@@ -63,11 +90,27 @@
       </div>
     </div>
 
+    <!-- Batch Actions -->
+    <div class="glass-panel" id="batch-actions" style="display: none;">
+      <div class="batch-actions-content">
+        <span id="selected-count">0 customers selected</span>
+        <div class="batch-buttons">
+          <button onclick="batchMarkDelivered()" class="btn btn-info">📦 Mark as Delivered</button>
+          <button onclick="batchMarkReady()" class="btn btn-warning">🔄 Mark as Ready</button>
+          <button onclick="batchDelete()" class="btn btn-danger">🗑️ Delete Selected</button>
+          <button onclick="clearSelection()" class="btn btn-secondary">✖️ Clear Selection</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Customer Table -->
     <div class="table-container">
       <table>
         <thead>
           <tr>
+            <th>
+              <input type="checkbox" id="select-all" onchange="toggleSelectAll()">
+            </th>
             <th>Customer Name</th>
             <th>Phone Number</th>
             <th>Delivery Status</th>
@@ -83,6 +126,8 @@
   <script>
     const API_BASE = 'https://delivery-reminder.onrender.com/api/customers';
     let allCustomers = [];
+    let csvData = [];
+    let selectedCustomers = new Set();
 
     // Show notification
     function showNotification(message, type = 'success') {
@@ -98,6 +143,361 @@
       }, 3000);
     }
 
+    // CSV Upload Functions
+    function downloadTemplate() {
+      const csvContent = "name,phone\nJohn Doe,+919876543210\nJane Smith,+919876543211\nCustomer123,+919876543212";
+      const blob = new Blob([csvContent], { type: 'text/csv' });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'customer_template.csv';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+      showNotification('Template downloaded successfully!');
+    }
+
+    function parseCSV(csvText) {
+      const lines = csvText.trim().split('\n');
+      const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
+      
+      if (!headers.includes('name') || !headers.includes('phone')) {
+        throw new Error('CSV must contain "name" and "phone" columns');
+      }
+
+      const nameIndex = headers.indexOf('name');
+      const phoneIndex = headers.indexOf('phone');
+      const customers = [];
+
+      for (let i = 1; i < lines.length; i++) {
+        const values = lines[i].split(',');
+        if (values.length >= 2) {
+          const name = values[nameIndex]?.trim();
+          const phone = values[phoneIndex]?.trim();
+          
+          if (name && phone) {
+            // Ensure phone starts with +91
+            const formattedPhone = phone.startsWith('+91') ? phone : `+91${phone}`;
+            customers.push({ name, phone: formattedPhone });
+          }
+        }
+      }
+      
+      return customers;
+    }
+
+    async function uploadCSV() {
+      if (csvData.length === 0) {
+        showNotification('No valid data to upload', 'error');
+        return;
+      }
+
+      const uploadBtn = document.getElementById('upload-btn');
+      const progressBar = document.getElementById('upload-progress');
+      
+      uploadBtn.disabled = true;
+      uploadBtn.textContent = '⏳ Uploading...';
+
+      let successCount = 0;
+      let errorCount = 0;
+      let updatedCount = 0;
+      let duplicateCount = 0;
+      let errorMessages = [];
+
+      for (let i = 0; i < csvData.length; i++) {
+        try {
+          console.log(`Processing customer ${i + 1}:`, csvData[i]);
+          
+          // Check if customer with this phone number already exists
+          const existingCustomer = allCustomers.find(c => c.phone === csvData[i].phone);
+          
+          if (existingCustomer) {
+            // Update existing customer to Ready status and update name if different
+            try {
+              const updateData = { 
+                status: 'Ready',
+                name: csvData[i].name // Update name in case it's different
+              };
+              
+              const response = await fetch(`${API_BASE}/${existingCustomer._id}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(updateData)
+              });
+
+              if (response.ok) {
+                console.log(`Updated existing customer ${i + 1}:`, existingCustomer._id);
+                updatedCount++;
+              } else {
+                const error = await response.text();
+                console.error(`Error updating customer ${i + 1}:`, error);
+                errorCount++;
+                errorMessages.push(`${csvData[i].name}: Update failed - ${error}`);
+              }
+            } catch (error) {
+              console.error(`Network error updating customer ${i + 1}:`, error);
+              errorCount++;
+              errorMessages.push(`${csvData[i].name}: Update network error`);
+            }
+          } else {
+            // Add new customer
+            const response = await fetch(API_BASE, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ 
+                name: csvData[i].name, 
+                phone: csvData[i].phone, 
+                status: 'Ready' 
+              })
+            });
+
+            if (response.ok) {
+              const result = await response.json();
+              console.log(`Success for new customer ${i + 1}:`, result);
+              successCount++;
+            } else {
+              const error = await response.text();
+              console.error(`Error for customer ${i + 1}:`, error);
+              errorCount++;
+              errorMessages.push(`${csvData[i].name}: ${error}`);
+            }
+          }
+        } catch (error) {
+          console.error(`Network error for customer ${i + 1}:`, error);
+          errorCount++;
+          errorMessages.push(`${csvData[i].name}: Network error`);
+        }
+
+        // Update progress
+        const progress = Math.round(((i + 1) / csvData.length) * 100);
+        progressBar.textContent = `${progress}%`;
+        progressBar.style.width = `${progress}%`;
+        
+        // Small delay to prevent overwhelming the server
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+
+      // Reset UI
+      uploadBtn.disabled = false;
+      uploadBtn.textContent = '📤 UPLOAD CUSTOMERS';
+      progressBar.textContent = '0%';
+      progressBar.style.width = '0%';
+      
+      // Clear file input
+      document.getElementById('csv-file-input').value = '';
+      csvData = [];
+      
+      // Show detailed results
+      console.log(`Upload complete: ${successCount} new, ${updatedCount} updated, ${errorCount} failed`);
+      
+      let message = '';
+      if (successCount > 0) message += `${successCount} new customers added. `;
+      if (updatedCount > 0) message += `${updatedCount} existing customers updated to Ready status. `;
+      
+      if (message) {
+        showNotification(message.trim());
+        // Wait a moment before refreshing to ensure data is saved
+        setTimeout(() => fetchCustomers(), 1000);
+      }
+      
+      if (errorCount > 0) {
+        console.log('Error details:', errorMessages);
+        showNotification(`${errorCount} customers failed to process - check console for details`, 'error');
+      }
+    }
+
+    // Multi-select and batch operations
+    function toggleSelectAll() {
+      const selectAllCheckbox = document.getElementById('select-all');
+      const customerCheckboxes = document.querySelectorAll('.customer-checkbox');
+      
+      customerCheckboxes.forEach(checkbox => {
+        checkbox.checked = selectAllCheckbox.checked;
+        if (selectAllCheckbox.checked) {
+          selectedCustomers.add(checkbox.value);
+        } else {
+          selectedCustomers.delete(checkbox.value);
+        }
+      });
+      
+      updateBatchActionsVisibility();
+    }
+
+    function toggleCustomerSelection(customerId) {
+      if (selectedCustomers.has(customerId)) {
+        selectedCustomers.delete(customerId);
+      } else {
+        selectedCustomers.add(customerId);
+      }
+      
+      updateSelectAllState();
+      updateBatchActionsVisibility();
+    }
+
+    function updateSelectAllState() {
+      const selectAllCheckbox = document.getElementById('select-all');
+      const customerCheckboxes = document.querySelectorAll('.customer-checkbox');
+      const checkedBoxes = document.querySelectorAll('.customer-checkbox:checked');
+      
+      if (checkedBoxes.length === 0) {
+        selectAllCheckbox.indeterminate = false;
+        selectAllCheckbox.checked = false;
+      } else if (checkedBoxes.length === customerCheckboxes.length) {
+        selectAllCheckbox.indeterminate = false;
+        selectAllCheckbox.checked = true;
+      } else {
+        selectAllCheckbox.indeterminate = true;
+        selectAllCheckbox.checked = false;
+      }
+    }
+
+    function updateBatchActionsVisibility() {
+      const batchActions = document.getElementById('batch-actions');
+      const selectedCount = document.getElementById('selected-count');
+      
+      if (selectedCustomers.size > 0) {
+        batchActions.style.display = 'block';
+        selectedCount.textContent = `${selectedCustomers.size} customer${selectedCustomers.size > 1 ? 's' : ''} selected`;
+      } else {
+        batchActions.style.display = 'none';
+      }
+    }
+
+    function clearSelection() {
+      selectedCustomers.clear();
+      document.getElementById('select-all').checked = false;
+      document.getElementById('select-all').indeterminate = false;
+      document.querySelectorAll('.customer-checkbox').forEach(cb => cb.checked = false);
+      updateBatchActionsVisibility();
+    }
+
+    async function batchMarkDelivered() {
+      if (selectedCustomers.size === 0) return;
+      
+      const confirmed = confirm(`Mark ${selectedCustomers.size} customer(s) as delivered?`);
+      if (!confirmed) return;
+      
+      await batchUpdateStatus('Delivered');
+    }
+
+    async function batchMarkReady() {
+      if (selectedCustomers.size === 0) return;
+      
+      const confirmed = confirm(`Mark ${selectedCustomers.size} customer(s) as ready for delivery?`);
+      if (!confirmed) return;
+      
+      await batchUpdateStatus('Ready');
+    }
+
+    async function batchUpdateStatus(status) {
+      let successCount = 0;
+      let errorCount = 0;
+      
+      for (const customerId of selectedCustomers) {
+        try {
+          await fetch(`${API_BASE}/${customerId}/status`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status })
+          });
+          successCount++;
+        } catch (error) {
+          errorCount++;
+        }
+      }
+      
+      clearSelection();
+      
+      if (successCount > 0) {
+        showNotification(`${successCount} customer(s) marked as ${status.toLowerCase()}!`);
+      }
+      if (errorCount > 0) {
+        showNotification(`${errorCount} customer(s) failed to update`, 'error');
+      }
+      
+      await fetchCustomers();
+    }
+
+    async function batchDelete() {
+      if (selectedCustomers.size === 0) return;
+      
+      const confirmed = confirm(`Are you sure you want to delete ${selectedCustomers.size} customer(s)? This action cannot be undone.`);
+      if (!confirmed) return;
+      
+      let successCount = 0;
+      let errorCount = 0;
+      
+      for (const customerId of selectedCustomers) {
+        try {
+          await fetch(`${API_BASE}/${customerId}`, { method: 'DELETE' });
+          successCount++;
+        } catch (error) {
+          errorCount++;
+        }
+      }
+      
+      clearSelection();
+      
+      if (successCount > 0) {
+        showNotification(`${successCount} customer(s) deleted successfully!`);
+      }
+      if (errorCount > 0) {
+        showNotification(`${errorCount} customer(s) failed to delete`, 'error');
+      }
+      
+      await fetchCustomers();
+    }
+
+    async function toggleStatus(id, currentStatus) {
+      const newStatus = currentStatus === 'Ready' ? 'Delivered' : 'Ready';
+      
+      try {
+        await fetch(`${API_BASE}/${id}/status`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: newStatus })
+        });
+        showNotification(`Status changed to ${newStatus.toLowerCase()}!`);
+        fetchCustomers();
+      } catch (error) {
+        showNotification('Failed to update status', 'error');
+      }
+    }
+    document.getElementById('csv-file-input').addEventListener('change', function(e) {
+      const file = e.target.files[0];
+      const uploadBtn = document.getElementById('upload-btn');
+      
+      if (!file) {
+        uploadBtn.disabled = true;
+        return;
+      }
+
+      if (!file.name.toLowerCase().endsWith('.csv')) {
+        showNotification('Please select a CSV file', 'error');
+        uploadBtn.disabled = true;
+        return;
+      }
+
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        try {
+          csvData = parseCSV(e.target.result);
+          if (csvData.length > 0) {
+            uploadBtn.disabled = false;
+            showNotification(`Found ${csvData.length} valid customers in CSV`);
+          } else {
+            uploadBtn.disabled = true;
+            showNotification('No valid customer data found in CSV', 'error');
+          }
+        } catch (error) {
+          uploadBtn.disabled = true;
+          showNotification(error.message, 'error');
+        }
+      };
+      reader.readAsText(file);
+    });
+
     async function fetchCustomers() {
       try {
         console.log("Calling API:", `${API_BASE}`);
@@ -112,7 +512,6 @@
       }
     }
 
-
     function renderTable(customers) {
       const table = document.getElementById('customer-table');
       table.innerHTML = '';
@@ -126,15 +525,25 @@
 
         const tr = document.createElement('tr');
         tr.style.animation = 'fadeIn 0.5s ease-in-out';
+        
+        const isSelected = selectedCustomers.has(c._id);
 
         tr.innerHTML = `
+          <td>
+            <input type="checkbox" class="customer-checkbox" value="${c._id}" 
+                   ${isSelected ? 'checked' : ''} 
+                   onchange="toggleCustomerSelection('${c._id}')">
+          </td>
           <td>${c.name}</td>
           <td>${c.phone}</td>
-          <td class="${c.status === 'Delivered' ? 'status-delivered' : 'status-ready'}">${c.status}</td>
+          <td>
+            <button onclick="toggleStatus('${c._id}', '${c.status}')" 
+                    class="status-toggle ${c.status === 'Delivered' ? 'status-delivered' : 'status-ready'}">
+              ${c.status === 'Delivered' ? '✅ Delivered' : '📦 Ready'}
+            </button>
+          </td>
           <td>${c.lastCalledAt ? new Date(c.lastCalledAt).toLocaleString() : '-'}</td>
           <td>
-            <button onclick="markDelivered('${c._id}')" ${c.status === 'Delivered' ? 'disabled' : ''} 
-                    class="table-btn btn-info">📦 Delivered</button>
             <button onclick="deleteCustomer('${c._id}')" class="table-btn btn-danger">🗑️ Delete</button>
           </td>
         `;
@@ -145,21 +554,12 @@
       // Update counters with animation
       document.getElementById('ready-count').textContent = readyCount;
       document.getElementById('delivered-count').textContent = deliveredCount;
+      
+      // Update select all state
+      updateSelectAllState();
     }
 
-    async function markDelivered(id) {
-      try {
-        await fetch(`${API_BASE}/${id}/status`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ status: 'Delivered' })
-        });
-        showNotification('Order marked as delivered!');
-        fetchCustomers();
-      } catch (error) {
-        showNotification('Failed to update status', 'error');
-      }
-    }
+    // File input change handler
 
     async function deleteCustomer(id) {
       const confirmDelete = confirm("Are you sure you want to delete this customer?");
@@ -185,7 +585,7 @@
     // Initialize
     fetchCustomers();
 
-    // Form submission
+    // Form submission with duplicate check
     document.getElementById('add-customer-form').addEventListener('submit', async (e) => {
       e.preventDefault();
 
@@ -197,6 +597,37 @@
         return;
       }
 
+      // Check if customer with this phone number already exists
+      const existingCustomer = allCustomers.find(c => c.phone === phone);
+      
+      if (existingCustomer) {
+        const confirmUpdate = confirm(`A customer with phone number ${phone} already exists (${existingCustomer.name}). Do you want to update their status to Ready?`);
+        
+        if (confirmUpdate) {
+          try {
+            await fetch(`${API_BASE}/${existingCustomer._id}`, {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ 
+                name: name, // Update name
+                status: 'Ready' // Set to Ready status
+              })
+            });
+            
+            document.getElementById('name').value = '';
+            document.getElementById('phone').value = '+91';
+            
+            showNotification('Customer updated to Ready status!');
+            await fetchCustomers();
+          } catch (error) {
+            showNotification("Failed to update customer. Please check server.", 'error');
+            console.error(error);
+          }
+        }
+        return;
+      }
+
+      // Add new customer if no duplicate found
       try {
         await fetch(API_BASE, {
           method: 'POST',
